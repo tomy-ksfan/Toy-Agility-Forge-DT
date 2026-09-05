@@ -160,7 +160,7 @@ between partitions.
 
 The processed high-fidelity JAX-FEM dataset is hosted separately from GitHub because of its size:
 
-- [JAX-FEM dataset folder on OSU OneDrive/SharePoint](https://buckeyemailosu-my.sharepoint.com/:f:/r/personal/fan_1317_osu_edu/Documents/JAX-FEM%20dataset?d=w75a47bf7a8234696a956b6dda7d5ee0e&csf=1&web=1&e=JzdxaV)
+- [JAX-FEM dataset](https://buckeyemailosu-my.sharepoint.com/:f:/r/personal/fan_1317_osu_edu/Documents/JAX-FEM%20dataset?d=w75a47bf7a8234696a956b6dda7d5ee0e&csf=1&web=1&e=JzdxaV)
 
 The reviewed all-trajectory dataset contains:
 
