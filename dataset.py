@@ -292,6 +292,17 @@ class _MemmapArrayStore:
 
     def __init__(self, root: Path) -> None:
         self.root = Path(root)
+        legacy_pose_fields = [
+            name
+            for name in ("theta", "shift")
+            if (self.root / f"{name}.npy").exists()
+        ]
+        if legacy_pose_fields:
+            raise ValueError(
+                f"{self.root}: legacy runtime pose fields are not supported: "
+                f"{legacy_pose_fields}. Align coordinates during offline extraction."
+            )
+
         self.arrays: dict[str, np.ndarray] = {}
         for field in ("X_t", "delta", "compression", *self.optional_fields):
             path = self.root / f"{field}.npy"
