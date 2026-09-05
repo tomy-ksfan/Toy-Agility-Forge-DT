@@ -158,28 +158,28 @@ between partitions.
 
 ## Data availability
 
-Raw SQLite databases, processed shards, model checkpoints, and generated
-outputs are intentionally not stored in GitHub. A separate documented data
-download will be added later. Do not commit local database paths or private
-OneDrive locations.
+The processed high-fidelity JAX-FEM dataset is hosted separately from GitHub because of its size:
 
-## Known integration gaps
+- [JAX-FEM dataset folder on OSU OneDrive/SharePoint](https://buckeyemailosu-my.sharepoint.com/:f:/r/personal/fan_1317_osu_edu/Documents/JAX-FEM%20dataset?d=w75a47bf7a8234696a956b6dda7d5ee0e&csf=1&web=1&e=JzdxaV)
 
-- The current public `dataset.py` imports `physics.py` and `transforms.py`,
-  which have not yet been uploaded. Therefore the dataset module is not yet a
-  standalone runnable public entry point.
-- The synthetic demo helper at the bottom of `dataset.py` still calls the older
-  `N_side`/`N_caps` sampler interface, while the uploaded `sampling.py` uses a
-  single total `N`. The high-fidelity shard loader is unaffected, but the demo
-  helper must be reconciled before release.
-- Automated tests, dependency locking, ForgeNet, training, evaluation, and MPC
-  are pending publication.
+The reviewed all-trajectory dataset contains:
 
-## Planned next steps
+- 132,300 one-step transitions
+- 1,847 forging trajectories
+- 1,034 NPZ shards
+- 1,020 aligned surface points per state
+- Approximately 3.8 GB of processed data
+- Recorded-pose alignment enabled during extraction (`apply_pose=true`)
+- No target-based trajectory filtering
 
-1. Reconcile the sampler and synthetic demo interfaces.
-2. Publish the dataset tests and complete dependency specification.
-3. Review and publish `model.py`.
-4. Add a supported trajectory-safe ForgeNet training entry point.
-5. Add evaluation and fixed-pose compression MPC only after their interfaces
-   are verified.
+After downloading, preserve the shard filenames and directory structure:
+
+```text
+data/
+  jax_fem_shards_all_v1/
+    extraction_metadata.json
+    README.md
+    shard_00000.npz
+    shard_00001.npz
+    ...
+    shard_01033.npz
