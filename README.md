@@ -6,13 +6,29 @@ preparation boundary before ForgeNet: analytic billet sampling, conversion of
 raw JAX-FORGE SQLite records into transition shards, and lazy loading of those
 shards for machine learning.
 
+The intended surrogate contract is
+
+$$
+\widehat{\Delta X}_t=f_\theta(X_t,c_t),
+\qquad
+\widehat X_{t+1}=X_t+\widehat{\Delta X}_t,
+$$
+
+where `X_t` is an aligned surface point cloud and `c_t` is one scalar
+compression action. Pose is not a neural-network input.
+
+> **Project status:** The public repository does not yet contain ForgeNet,
+> a supported training entry point, MPC, or a checkpoint. The reviewed
+> high-fidelity dataset is hosted separately because of its size.
+
 ## Current files
 
-| File | Description |
+| File | Responsibility |
 |---|---|
 | [`sampling.py`](sampling.py) | Generate an analytic cylindrical surface point cloud with a requested total number of points. |
 | [`sqlite_to_forgenet_shards.py`](sqlite_to_forgenet_shards.py) | Convert consecutive JAX-FORGE SQLite strike endpoints into smaller ForgeNet-style NPZ transition shards. |
 | [`dataset.py`](dataset.py) | Validate and lazily load transition shards, construct PyTorch samples, and split complete trajectories into train, validation, and test sets. |
+| [`tests/test_dataset.py`](tests/test_dataset.py) | Verify shard loading, tensor construction, metadata isolation, and trajectory-safe splitting with temporary test data. |
 
 ## Current data flow
 
@@ -52,8 +68,11 @@ source .venv/bin/activate
 python -m pip install numpy
 ```
 
-PyTorch is additionally required by `dataset.py`. A complete
-`requirements.txt` will be added after the public execution path is complete.
+PyTorch is additionally required by `dataset.py` and its tests:
+
+```bash
+python -m pip install torch
+```
 
 ## Generate an analytic billet point cloud
 
@@ -149,7 +168,11 @@ Each shard contains `S` transition samples:
 
 `dataset.py` reconstructs `X_next` from `X_t + delta` and scales only the
 displacement target by `delta_scalar` (100 by default). Stored `position` and
-`rotation` remain metadata and are not passed to ForgeNet.
+`rotation` remain metadata and are not passed to ForgeNet. The loader assumes
+that `X_t` and `delta` were already aligned during offline extraction; it does
+not perform another runtime pose transformation. Legacy datasets containing
+`theta` or `shift` are rejected with a migration message instead of being
+silently reinterpreted.
 
 Training, validation, and test partitions must be created with
 `make_trajectory_train_val_test_datasets`. Splitting individual transitions
@@ -158,9 +181,10 @@ between partitions.
 
 ## Data availability
 
-The processed high-fidelity JAX-FEM dataset is hosted separately from GitHub because of its size:
+The processed high-fidelity JAX-FEM dataset is hosted separately from GitHub
+because of its size:
 
-- [JAX-FEM dataset](https://buckeyemailosu-my.sharepoint.com/:f:/r/personal/fan_1317_osu_edu/Documents/JAX-FEM%20dataset?d=w75a47bf7a8234696a956b6dda7d5ee0e&csf=1&web=1&e=JzdxaV)
+- [JAX-FEM dataset on OSU OneDrive/SharePoint](https://buckeyemailosu-my.sharepoint.com/:f:/r/personal/fan_1317_osu_edu/Documents/JAX-FEM%20dataset?d=w75a47bf7a8234696a956b6dda7d5ee0e&csf=1&web=1&e=JzdxaV)
 
 The reviewed all-trajectory dataset contains:
 
@@ -168,18 +192,44 @@ The reviewed all-trajectory dataset contains:
 - 1,847 forging trajectories
 - 1,034 NPZ shards
 - 1,020 aligned surface points per state
-- Approximately 3.8 GB of processed data
-- Recorded-pose alignment enabled during extraction (`apply_pose=true`)
+- Approximately 3.8 GB
+- Offline pose alignment enabled (`apply_pose=true`)
 - No target-based trajectory filtering
 
-After downloading, preserve the shard filenames and directory structure:
+After downloading, preserve the directory structure:
 
 ```text
-data/
-  jax_fem_shards_all_v1/
-    extraction_metadata.json
-    README.md
-    shard_00000.npz
-    shard_00001.npz
-    ...
-    shard_01033.npz
+data/jax_fem_shards_all_v1/
+├── extraction_metadata.json
+├── README.md
+├── shard_00000.npz
+├── shard_00001.npz
+└── ...
+```
+
+The raw SQLite database, model checkpoints, and generated outputs are not
+stored in GitHub. Access to the linked folder may depend on the owner's
+SharePoint permissions.
+
+## Test the dataset loader
+
+The tests create small temporary shards and do not download the full dataset:
+
+```bash
+python -m unittest tests.test_dataset -v
+```
+
+## Known integration gaps
+
+- Dependency locking, ForgeNet, training, evaluation, and MPC are pending
+  publication.
+- The current test suite verifies the data boundary only; it does not yet
+  validate neural-network training or closed-loop control.
+
+## Planned next steps
+
+1. Complete the dependency specification.
+2. Review and publish `model.py`.
+3. Add a supported trajectory-safe ForgeNet training entry point.
+4. Add evaluation and fixed-pose compression MPC only after their interfaces
+   are verified.
