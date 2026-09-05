@@ -8,7 +8,7 @@ shards for machine learning.
 
 ## Current files
 
-| File | Responsibility |
+| File | Description |
 |---|---|
 | [`sampling.py`](sampling.py) | Generate an analytic cylindrical surface point cloud with a requested total number of points. |
 | [`sqlite_to_forgenet_shards.py`](sqlite_to_forgenet_shards.py) | Convert consecutive JAX-FORGE SQLite strike endpoints into smaller ForgeNet-style NPZ transition shards. |
