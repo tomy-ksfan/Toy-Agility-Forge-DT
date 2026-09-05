@@ -17,10 +17,6 @@ $$
 where `X_t` is an aligned surface point cloud and `c_t` is one scalar
 compression action. Pose is not a neural-network input.
 
-> **Project status:** The public repository does not yet contain ForgeNet,
-> a supported training entry point, MPC, or a checkpoint. The reviewed
-> high-fidelity dataset is hosted separately because of its size.
-
 ## Current files
 
 | File | Responsibility |
