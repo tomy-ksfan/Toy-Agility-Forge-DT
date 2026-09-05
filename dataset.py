@@ -1,4 +1,4 @@
-"""High-fidelity displacement dataset loading and toy-data generation."""
+"""Load aligned high-fidelity displacement transitions for ForgeNet."""
 
 from __future__ import annotations
 
@@ -14,21 +14,15 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from physics import high_fidelity_transition, sample_pose
-from sampling import sample_initial_billet
-from transforms import apply_die_pose
-
 
 @dataclass
 class HighFidelityDatasetArrays:
-    """Container for high-fidelity one-step transitions."""
+    """Container for aligned high-fidelity one-step transitions."""
 
     X_t: np.ndarray
     delta: np.ndarray
     compression: np.ndarray
     X_next: np.ndarray
-    theta: np.ndarray | None = None
-    shift: np.ndarray | None = None
     trajectory_id: np.ndarray | None = None
     step_id: np.ndarray | None = None
 
@@ -68,6 +62,16 @@ def load_high_fidelity_dataset(path: str | Path) -> HighFidelityDatasetArrays:
     else:
         raise ValueError("Supported dataset formats are .npz, .pt, and .pth.")
 
+    legacy_pose_fields = [
+        name for name in ("theta", "shift") if _field(raw, name) is not None
+    ]
+    if legacy_pose_fields:
+        raise ValueError(
+            "Legacy runtime pose fields are not supported: "
+            f"{legacy_pose_fields}. Align coordinates during offline extraction "
+            "before loading them for training."
+        )
+
     X_t = _to_numpy(_field(raw, "X_t"), "X_t").astype(np.float32)
     delta = _to_numpy(_field(raw, "delta"), "delta").astype(np.float32)
     compression = _to_numpy(_field(raw, "compression"), "compression").astype(np.float32)
@@ -96,18 +100,6 @@ def load_high_fidelity_dataset(path: str | Path) -> HighFidelityDatasetArrays:
                 RuntimeWarning,
             )
 
-    theta = _field(raw, "theta")
-    if theta is not None:
-        theta = _to_numpy(theta, "theta").astype(np.float32)
-        theta = theta.reshape(X_t.shape[0], 1)
-
-    shift = _field(raw, "shift")
-    if shift is not None:
-        shift = _to_numpy(shift, "shift").astype(np.float32)
-        if shift.shape[-1] not in {2, 3}:
-            raise ValueError("shift must have shape (S, 2) or (S, 3).")
-        shift = shift[:, :2]
-
     trajectory_id = _field(raw, "trajectory_id")
     step_id = _field(raw, "step_id")
 
@@ -116,41 +108,24 @@ def load_high_fidelity_dataset(path: str | Path) -> HighFidelityDatasetArrays:
         delta=delta,
         compression=compression,
         X_next=X_next_from_delta.astype(np.float32),
-        theta=theta,
-        shift=shift,
         trajectory_id=None if trajectory_id is None else np.asarray(trajectory_id),
         step_id=None if step_id is None else np.asarray(step_id),
     )
 
 
-def prepare_training_arrays(
-    arrays: HighFidelityDatasetArrays,
-    train_in_die_frame: bool = True,
-) -> dict[str, np.ndarray]:
-    """Prepare model inputs and targets without adding pose to the action.
+def prepare_training_arrays(arrays: HighFidelityDatasetArrays) -> dict[str, np.ndarray]:
+    """Return aligned model inputs and targets without applying another pose.
 
-    If ``theta`` and ``shift`` are present and ``train_in_die_frame`` is true,
-    the point clouds are transformed into the fixed-die frame and the target
-    displacement is recomputed there. The action tensor remains
-    ``compression`` with shape ``(S, 1)``.
+    Coordinate-frame alignment is an offline extraction responsibility. This
+    loader therefore treats ``X_t`` and ``delta`` as final training tensors;
+    recorded pose fields remain metadata and never enter the network sample.
     """
 
-    if train_in_die_frame and arrays.theta is not None and arrays.shift is not None:
-        theta = arrays.theta.reshape(-1)
-        X_t = apply_die_pose(arrays.X_t, theta, arrays.shift).astype(np.float32)
-        X_next_die = apply_die_pose(arrays.X_next, theta, arrays.shift).astype(np.float32)
-        delta = X_next_die - X_t
-        X_next = X_next_die
-    else:
-        X_t = arrays.X_t
-        delta = arrays.delta
-        X_next = arrays.X_next
-
     return {
-        "X_t": X_t.astype(np.float32),
+        "X_t": arrays.X_t.astype(np.float32),
         "compression": arrays.compression.astype(np.float32),
-        "delta": delta.astype(np.float32),
-        "X_next": X_next.astype(np.float32),
+        "delta": arrays.delta.astype(np.float32),
+        "X_next": arrays.X_next.astype(np.float32),
     }
 
 
@@ -226,12 +201,9 @@ def _prepare_one_training_sample(
     X_t: np.ndarray,
     delta: np.ndarray,
     compression: np.ndarray,
-    theta: np.ndarray | float | None,
-    shift: np.ndarray | None,
-    train_in_die_frame: bool,
     delta_scalar: float,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Prepare one repo-style sample while keeping pose separate from action."""
+    """Prepare one aligned sample without applying a runtime pose transform."""
 
     X_t = np.asarray(X_t, dtype=np.float32)
     delta = np.asarray(delta, dtype=np.float32)
@@ -241,28 +213,24 @@ def _prepare_one_training_sample(
     if delta.shape != X_t.shape:
         raise ValueError(f"delta sample must match X_t shape {X_t.shape}; received {delta.shape}.")
 
-    X_next_world = X_t + delta
-
-    if train_in_die_frame and theta is not None and shift is not None:
-        theta_value = float(np.asarray(theta).reshape(-1)[0])
-        shift_value = np.asarray(shift, dtype=np.float32).reshape(-1)[:2]
-        X_train = apply_die_pose(X_t, theta_value, shift_value).astype(np.float32)
-        X_next = apply_die_pose(X_next_world, theta_value, shift_value).astype(np.float32)
-        delta_train = X_next - X_train
-    else:
-        X_train = X_t
-        delta_train = delta
-        X_next = X_next_world
+    X_next = X_t + delta
 
     return (
-        torch.as_tensor(X_train, dtype=torch.float32),
+        torch.as_tensor(X_t, dtype=torch.float32),
         torch.as_tensor(compression, dtype=torch.float32).unsqueeze(0),
-        torch.as_tensor(delta_train * float(delta_scalar), dtype=torch.float32).unsqueeze(0),
+        torch.as_tensor(delta * float(delta_scalar), dtype=torch.float32).unsqueeze(0),
         torch.as_tensor(X_next, dtype=torch.float32).unsqueeze(0),
     )
 
 
 def _validate_required_field_shapes(fields: dict[str, DatasetFieldInfo], source: Path) -> int:
+    legacy_pose_fields = [name for name in ("theta", "shift") if name in fields]
+    if legacy_pose_fields:
+        raise ValueError(
+            f"{source}: legacy runtime pose fields are not supported: "
+            f"{legacy_pose_fields}. Align coordinates during offline extraction."
+        )
+
     missing = [name for name in ("X_t", "delta", "compression") if name not in fields]
     if missing:
         raise KeyError(f"{source} is missing required fields: {missing}")
@@ -281,12 +249,6 @@ def _validate_required_field_shapes(fields: dict[str, DatasetFieldInfo], source:
         raise ValueError(
             f"{source}: compression must have shape (S,) or (S, 1); received {compression_shape}."
         )
-    if "theta" in fields and fields["theta"].shape[0] != X_shape[0]:
-        raise ValueError(f"{source}: theta sample count must match X_t.")
-    if "shift" in fields:
-        shift_shape = fields["shift"].shape
-        if shift_shape[0] != X_shape[0] or shift_shape[-1] not in {2, 3}:
-            raise ValueError(f"{source}: shift must have shape (S, 2) or (S, 3).")
     if "position" in fields and fields["position"].shape != (X_shape[0], 3):
         raise ValueError(f"{source}: position must have shape (S, 3).")
     if "rotation" in fields and fields["rotation"].shape != (X_shape[0], 4):
@@ -322,8 +284,6 @@ class _MemmapArrayStore:
 
     optional_fields = (
         "X_next",
-        "theta",
-        "shift",
         "trajectory_id",
         "step_id",
         "position",
@@ -383,7 +343,7 @@ class _NpzShardStore:
         with np.load(path, allow_pickle=False) as raw:
             arrays = {
                 name: raw[name].astype(np.float32, copy=False)
-                for name in ("X_t", "delta", "compression", "theta", "shift")
+                for name in ("X_t", "delta", "compression")
                 if name in raw.files
             }
         self._cache[path] = arrays
@@ -421,8 +381,6 @@ class LazyHighFidelityTransitionDataset(Dataset):
              X_t.npy
              delta.npy
              compression.npy
-             theta.npy        # optional
-             shift.npy        # optional
 
        Arrays are opened with ``mmap_mode=\"r\"`` and sampled lazily.
 
@@ -440,13 +398,11 @@ class LazyHighFidelityTransitionDataset(Dataset):
     def __init__(
         self,
         path: str | Path,
-        train_in_die_frame: bool = True,
         delta_scalar: float = 100.0,
         max_samples: int | None = None,
         shard_cache_size: int = 2,
     ) -> None:
         self.path = Path(path)
-        self.train_in_die_frame = train_in_die_frame
         self.delta_scalar = float(delta_scalar)
 
         if not self.path.exists():
@@ -482,9 +438,6 @@ class LazyHighFidelityTransitionDataset(Dataset):
             X_t=fields["X_t"],
             delta=fields["delta"],
             compression=fields["compression"],
-            theta=fields.get("theta"),
-            shift=fields.get("shift"),
-            train_in_die_frame=self.train_in_die_frame,
             delta_scalar=self.delta_scalar,
         )
 
@@ -657,7 +610,6 @@ def make_trajectory_train_val_test_datasets(
 
 def open_training_dataset(
     path: str | Path,
-    train_in_die_frame: bool = True,
     delta_scalar: float = 100.0,
     max_samples: int | None = None,
     shard_cache_size: int = 2,
@@ -673,7 +625,6 @@ def open_training_dataset(
     if path.is_dir():
         return LazyHighFidelityTransitionDataset(
             path=path,
-            train_in_die_frame=train_in_die_frame,
             delta_scalar=delta_scalar,
             max_samples=max_samples,
             shard_cache_size=shard_cache_size,
@@ -688,7 +639,7 @@ def open_training_dataset(
             )
 
     arrays = load_high_fidelity_dataset(path)
-    training_arrays = prepare_training_arrays(arrays, train_in_die_frame=train_in_die_frame)
+    training_arrays = prepare_training_arrays(arrays)
     if max_samples is not None:
         training_arrays = {
             name: values[:max_samples]
@@ -724,7 +675,7 @@ def write_npz_shards_from_arrays(
             "compression": arrays.compression[start:stop],
             "X_next": arrays.X_next[start:stop],
         }
-        for name in ("theta", "shift", "trajectory_id", "step_id"):
+        for name in ("trajectory_id", "step_id"):
             value = getattr(arrays, name)
             if value is not None:
                 payload[name] = value[start:stop]
@@ -732,79 +683,3 @@ def write_npz_shards_from_arrays(
         np.savez_compressed(path, **payload)
         paths.append(path)
     return paths
-
-
-def create_demo_high_fidelity_dataset(
-    path: str | Path,
-    num_samples: int,
-    R0: float,
-    H0: float,
-    N_side: int,
-    N_caps: int,
-    compression_range: tuple[float, float],
-    pose_range: dict[str, Any] | None = None,
-    seed: int = 0,
-    max_pre_steps: int = 2,
-) -> Path:
-    """Create a synthetic displacement dataset with the required fields."""
-
-    if num_samples <= 0:
-        raise ValueError("num_samples must be positive.")
-
-    rng = np.random.default_rng(seed)
-    X_t_list: list[np.ndarray] = []
-    delta_list: list[np.ndarray] = []
-    compression_list: list[list[float]] = []
-    theta_list: list[list[float]] = []
-    shift_list: list[np.ndarray] = []
-    trajectory_id: list[int] = []
-    step_id: list[int] = []
-
-    for sample_idx in range(num_samples):
-        X = sample_initial_billet(
-            R0=R0,
-            H0=H0,
-            N_side=N_side,
-            N_caps=N_caps,
-            rotate=True,
-            seed=int(rng.integers(0, 2**31 - 1)),
-        )
-
-        for pre_step in range(int(rng.integers(0, max_pre_steps + 1))):
-            pre_compression = float(rng.uniform(*compression_range))
-            pre_theta, pre_shift = sample_pose(rng, pose_range)
-            X, _, _ = high_fidelity_transition(X, pre_compression, pre_theta, pre_shift)
-
-        compression = float(rng.uniform(*compression_range))
-        theta, shift = sample_pose(rng, pose_range)
-        X_next, delta_world, _ = high_fidelity_transition(X, compression, theta, shift)
-
-        X_t_list.append(X)
-        delta_list.append(delta_world)
-        compression_list.append([compression])
-        theta_list.append([theta])
-        shift_list.append(shift)
-        trajectory_id.append(sample_idx)
-        step_id.append(sample_idx)
-
-    X_t = np.stack(X_t_list).astype(np.float32)
-    delta = np.stack(delta_list).astype(np.float32)
-    compression = np.asarray(compression_list, dtype=np.float32)
-    theta = np.asarray(theta_list, dtype=np.float32)
-    shift = np.stack(shift_list).astype(np.float32)
-    X_next = X_t + delta
-
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(
-        path,
-        X_t=X_t,
-        delta=delta,
-        compression=compression,
-        X_next=X_next.astype(np.float32),
-        theta=theta,
-        shift=shift,
-        trajectory_id=np.asarray(trajectory_id, dtype=np.int64),
-        step_id=np.asarray(step_id, dtype=np.int64),
-    )
-    return path
