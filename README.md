@@ -6,17 +6,6 @@ preparation boundary before ForgeNet: analytic billet sampling, conversion of
 raw JAX-FORGE SQLite records into transition shards, and lazy loading of those
 shards for machine learning.
 
-The intended surrogate contract is
-
-$$
-\widehat{\Delta X}_t=f_\theta(X_t,c_t),
-\qquad
-\widehat X_{t+1}=X_t+\widehat{\Delta X}_t,
-$$
-
-where `X_t` is an aligned surface point cloud and `c_t` is one scalar
-compression action. Pose is not a neural-network input.
-
 ## Current files
 
 | File | Responsibility |
