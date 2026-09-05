@@ -172,7 +172,7 @@ class LazyDatasetTests(unittest.TestCase):
         with self.assertRaisesRegex(KeyError, "compression"):
             open_training_dataset(self.root)
 
-    def test_legacy_runtime_pose_fields_fail_with_migration_message(self) -> None:
+    def test_legacy_runtime_pose_fields_fail_for_shards_and_memmaps(self) -> None:
         X_t = np.zeros((1, 4, 3), dtype=np.float32)
         np.savez_compressed(
             self.root / "shard_00000.npz",
@@ -185,6 +185,16 @@ class LazyDatasetTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "offline extraction"):
             open_training_dataset(self.root)
+
+        memmap_root = self.root / "memmap"
+        memmap_root.mkdir()
+        np.save(memmap_root / "X_t.npy", X_t)
+        np.save(memmap_root / "delta.npy", np.zeros_like(X_t))
+        np.save(memmap_root / "compression.npy", np.zeros((1, 1), dtype=np.float32))
+        np.save(memmap_root / "theta.npy", np.zeros((1, 1), dtype=np.float32))
+
+        with self.assertRaisesRegex(ValueError, "offline extraction"):
+            open_training_dataset(memmap_root)
 
 
 class TrajectorySplitTests(unittest.TestCase):
