@@ -12,12 +12,12 @@ one-step deformation with ForgeNet.
 | [sqlite_to_forgenet_shards.py](sqlite_to_forgenet_shards.py) | Convert consecutive SQLite strike endpoints into NPZ transition shards. |
 | [dataset.py](dataset.py) | Load shards lazily, construct training tensors, and split complete trajectories. |
 | [model.py](model.py) | Define ForgeNet and helpers for scaled and physical displacement predictions. |
-| [train_forgenet.py](train_forgenet.py) | Define initialization, batching, training, validation-based checkpoint selection, and final test evaluation. Requires the loader interface synchronization described below. |
+| [train_forgenet.py](train_forgenet.py) | Define initialization, batching, training, validation-based checkpoint selection, and final test evaluation. |
 | [tests/test_dataset.py](tests/test_dataset.py) | Test shard loading, tensor construction, pose-metadata isolation, and trajectory-safe splitting. |
 
 The data path is SQLite → NPZ shards → `dataset.py` → ForgeNet training.
-The currently uploaded trainer and loader have an interface mismatch; see
-[Training entry and compatibility](#training-entry-and-compatibility).
+The loader and trainer use the same trajectory-safe split interface. See
+[Training](#training) for data inspection and training commands.
 
 `sampling.py` is a separate analytic billet utility. It does not create
 high-fidelity displacement labels or replace the FEM training data.
@@ -216,12 +216,46 @@ state, action, scaled_delta, next_state = dataset[0]
 print(state.shape, action.shape, scaled_delta.shape, next_state.shape)
 ```
 
-Complete trajectories must stay within a single partition to avoid leakage
-between neighboring states. The currently uploaded splitter holds out one
-test trajectory, choosing the longest by default. Its validation fraction
-targets a share of the remaining transitions while keeping trajectories
-intact. It is not yet the newer multi-trajectory 80/10/10 splitter expected
-by the uploaded trainer.
+### Trajectory-safe split
+
+Use `make_trajectory_train_val_test_datasets` to keep each complete trajectory
+within one partition. The default split is approximately 80% training, 10%
+validation, and 10% test **by trajectory count**, not by transition count.
+
+- Validation and test counts are rounded from the total trajectory count,
+  with at least one trajectory each; all remaining groups go to training.
+- The longest trajectory occupies one of the test slots, not an extra slot.
+  Ties are resolved by the smallest trajectory ID.
+- Remaining assignments use a seeded shuffle. No trajectory is shared across
+  partitions, and every transition is assigned exactly once.
+- Optional `test_trajectory_id` forces another trajectory into the existing
+  test allocation. It does not replace the longest or enlarge the test set;
+  insufficient test slots produce an error.
+
+```python
+from dataset import make_trajectory_train_val_test_datasets
+
+train_set, val_set, test_set, split_info = make_trajectory_train_val_test_datasets(
+    dataset,
+    val_fraction=0.1,
+    test_fraction=0.1,
+    seed=7,
+)
+assert split_info.longest_trajectory_id in split_info.test_trajectory_ids
+```
+
+For the reviewed corpus with the trainer defaults (`split_seed=7`):
+
+| Partition | Trajectories | Transitions |
+|---|---:|---:|
+| Training | 1,477 | 106,423 |
+| Validation | 185 | 12,951 |
+| Test | 185 | 12,926 |
+| Total | 1,847 | 132,300 |
+
+The longest trajectory, ID 738, is included in test. Transition percentages
+need not equal 80/10/10 because trajectory lengths differ. The split requires
+at least three trajectories and enough groups to keep every partition nonempty.
 
 ## ForgeNet
 
@@ -262,23 +296,13 @@ print(next_state.shape)  # torch.Size([1, 16, 3])
 This checks the interface, not prediction accuracy. A trained checkpoint is
 required for meaningful deformation predictions.
 
-## Training entry and compatibility
+## Training
 
-The published `train_forgenet.py` expects a newer `dataset.py` interface:
+`train_forgenet.py` loads a directory of offline-aligned NPZ shards and
+uses the trajectory-safe splitter above. It starts from seeded random
+initialization rather than loading an existing checkpoint.
 
-- It passes `test_fraction` to `make_trajectory_train_val_test_datasets`,
-  but the uploaded function does not accept that argument.
-- It reads `split.longest_trajectory_id`, which is absent from the uploaded
-  `TrajectorySplitInfo`.
-
-Consequently, both `--inspect-data` and `--train` currently stop during
-data preparation on otherwise valid shards with
-`TypeError: ... unexpected keyword argument 'test_fraction'`.
-Synchronize the loader's split implementation and metadata before using
-either mode. Removing the argument alone would not implement the trainer's
-multi-trajectory split policy.
-
-The trainer itself defines the following configuration and behavior:
+Trainer defaults:
 
 | Setting | Default |
 |---|---|
@@ -291,7 +315,8 @@ The trainer itself defines the following configuration and behavior:
 | Optimizer | AdamW, weight decay `1e-6` |
 | Device | `cpu` |
 
-Once the loader interface is synchronized, the entry point supports:
+After downloading or extracting the shards, inspect the data first and
+start training explicitly when ready:
 
 ```bash
 # Inspect loading and split coverage without fitting or saving a model.
@@ -329,9 +354,17 @@ Run the uploaded dataset tests without downloading the full dataset:
 python -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
-All six currently published tests pass on temporary data. They test the
-loader and its existing splitter, not trainer/loader integration or
-closed-loop performance.
+All 13 published tests pass on temporary data. They cover shard loading,
+tensor construction, metadata isolation, trajectory-count splitting,
+longest-trajectory inclusion, seed reproducibility, and invalid split choices.
+
+Before publication, nine additional local trainer-integration tests also
+passed against the uploaded model/trainer and updated loader, including a
+one-epoch synthetic run, checkpoint reload, and overwrite protection. These
+additional tests are not included in the published test directory. The full
+132,300-transition corpus passed a loading and split-coverage inspection.
+These checks do not establish deformation accuracy or closed-loop performance;
+full-corpus training was not run as part of this update.
 
 The command-line help is also available without a dataset:
 

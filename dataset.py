@@ -184,6 +184,7 @@ class TrajectorySplitInfo:
     train_samples: int
     validation_samples: int
     test_samples: int
+    longest_trajectory_id: int | None = None
 
 
 def _as_compression_array(compression: Any) -> np.ndarray:
@@ -531,19 +532,33 @@ def make_train_val_datasets(
 
 def make_trajectory_train_val_test_datasets(
     dataset: Dataset,
-    val_fraction: float = 0.2,
+    val_fraction: float = 0.1,
     seed: int = 0,
     test_trajectory_id: int | None = None,
+    *,
+    test_fraction: float = 0.1,
 ) -> tuple[Dataset, Dataset, Dataset, TrajectorySplitInfo]:
-    """Split complete trajectories so neighboring states cannot leak across sets.
+    """Randomly split whole trajectories, always holding out the longest in test.
 
-    When no test trajectory is specified, the longest trajectory is held out so
-    the test set supports the longest possible recursive evaluation. Validation
-    trajectories are then selected deterministically from the remaining groups.
+    Fractions refer to the TOTAL number of trajectories, not transitions or the
+    remainder after test selection. Validation/test counts use round(), with at
+    least one trajectory each; all remaining trajectories go to training. The
+    default proportions are approximately 80/10/10.
+
+    The longest trajectory occupies one of the test slots (not an extra slot).
+    Ties are resolved by the smallest trajectory ID. All other assignments use
+    the seeded shuffle, without preferential selection by trajectory length.
+    If test_trajectory_id is supplied, it forces an ADDITIONAL ID into test;
+    it does not replace the longest or increase the requested test-set size.
+    Test IDs are stored sorted, so index zero need not be the longest.
     """
 
     if not 0.0 < val_fraction < 1.0:
         raise ValueError("val_fraction must be between 0 and 1.")
+    if not 0.0 < test_fraction < 1.0:
+        raise ValueError("test_fraction must be between 0 and 1.")
+    if val_fraction + test_fraction >= 1.0:
+        raise ValueError("val_fraction + test_fraction must be less than 1.")
     metadata = getattr(dataset, "metadata", None)
     if metadata is None:
         raise TypeError(
@@ -557,59 +572,42 @@ def make_trajectory_train_val_test_datasets(
     if unique_ids.size < 3:
         raise ValueError("At least three trajectories are required for train/validation/test splits.")
 
-    count_by_id = {int(key): int(value) for key, value in zip(unique_ids, counts)}
-    if test_trajectory_id is None:
-        test_trajectory_id = int(unique_ids[int(np.argmax(counts))])
-    if int(test_trajectory_id) not in count_by_id:
-        raise ValueError(f"Unknown test_trajectory_id={test_trajectory_id}.")
+    n_trajectories = int(unique_ids.size)
+    n_validation = max(1, int(round(val_fraction * n_trajectories)))
+    n_test = max(1, int(round(test_fraction * n_trajectories)))
+    if n_validation + n_test >= n_trajectories:
+        raise ValueError("Rounded validation/test counts leave no training trajectories.")
 
-    candidates = [int(value) for value in unique_ids if int(value) != int(test_trajectory_id)]
-    rng = np.random.default_rng(seed)
-    rng.shuffle(candidates)
-    remaining_samples = len(dataset) - count_by_id[int(test_trajectory_id)]
-    target_validation_samples = max(1, int(round(val_fraction * remaining_samples)))
-    validation_ids: list[int] = []
-    validation_count = 0
-    remaining_candidates = candidates.copy()
-    while remaining_candidates:
-        current_gap = abs(target_validation_samples - validation_count)
-        candidate = min(
-            remaining_candidates,
-            key=lambda value: abs(
-                target_validation_samples - (validation_count + count_by_id[value])
-            ),
+    longest_id = int(unique_ids[int(np.argmax(counts))])
+    forced_test_ids = {longest_id}
+    if test_trajectory_id is not None:
+        if int(test_trajectory_id) not in unique_ids:
+            raise ValueError(f"Unknown test_trajectory_id={test_trajectory_id}.")
+        forced_test_ids.add(int(test_trajectory_id))
+    if len(forced_test_ids) > n_test:
+        raise ValueError(
+            "test_fraction provides too few slots for the longest trajectory and "
+            "the additional test_trajectory_id; increase test_fraction."
         )
-        candidate_gap = abs(
-            target_validation_samples - (validation_count + count_by_id[candidate])
-        )
-        if validation_ids and candidate_gap >= current_gap:
-            break
-        validation_ids.append(candidate)
-        validation_count += count_by_id[candidate]
-        remaining_candidates.remove(candidate)
-        if len(remaining_candidates) <= 1:
-            break
 
-    validation_set = set(validation_ids)
-    test_set = {int(test_trajectory_id)}
-    train_ids = [
-        int(value)
-        for value in unique_ids
-        if int(value) not in validation_set and int(value) not in test_set
-    ]
-    if not train_ids or not validation_ids:
-        raise ValueError("Trajectory split produced an empty train or validation set.")
+    candidates = [int(value) for value in unique_ids if int(value) not in forced_test_ids]
+    shuffled = np.random.default_rng(seed).permutation(candidates).tolist()
+    random_test_count = n_test - len(forced_test_ids)
+    test_ids = sorted(forced_test_ids | set(shuffled[:random_test_count]))
+    validation_ids = sorted(shuffled[random_test_count:random_test_count + n_validation])
+    train_ids = sorted(shuffled[random_test_count + n_validation:])
 
     train_indices = np.flatnonzero(np.isin(trajectory_ids, train_ids))
     validation_indices = np.flatnonzero(np.isin(trajectory_ids, validation_ids))
-    test_indices = np.flatnonzero(trajectory_ids == int(test_trajectory_id))
+    test_indices = np.flatnonzero(np.isin(trajectory_ids, test_ids))
     info = TrajectorySplitInfo(
         train_trajectory_ids=tuple(sorted(train_ids)),
         validation_trajectory_ids=tuple(sorted(validation_ids)),
-        test_trajectory_ids=(int(test_trajectory_id),),
+        test_trajectory_ids=tuple(test_ids),
         train_samples=int(train_indices.size),
         validation_samples=int(validation_indices.size),
         test_samples=int(test_indices.size),
+        longest_trajectory_id=longest_id,
     )
     return (
         IndexedTransitionDataset(dataset, train_indices),

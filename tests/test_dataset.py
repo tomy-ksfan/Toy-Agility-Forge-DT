@@ -197,6 +197,24 @@ class LazyDatasetTests(unittest.TestCase):
             open_training_dataset(memmap_root)
 
 
+class TrajectoryMetadataDataset(torch.utils.data.Dataset):
+    """Splitting must need only small trajectory metadata, never point clouds."""
+
+    def __init__(self, trajectory_ids: np.ndarray) -> None:
+        self.trajectory_ids = np.asarray(trajectory_ids, dtype=np.int64)
+
+    def __len__(self) -> int:
+        return len(self.trajectory_ids)
+
+    def metadata(self, name: str) -> np.ndarray:
+        if name != "trajectory_id":
+            raise KeyError(name)
+        return self.trajectory_ids
+
+    def __getitem__(self, index: int):
+        raise AssertionError("Splitting must not load point clouds.")
+
+
 class TrajectorySplitTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
@@ -230,6 +248,7 @@ class TrajectorySplitTests(unittest.TestCase):
             val_fraction=0.25,
             seed=7,
             test_trajectory_id=4,
+            test_fraction=0.4,
         )
 
         train_ids = self.split_ids(train)
@@ -240,11 +259,91 @@ class TrajectorySplitTests(unittest.TestCase):
         self.assertFalse(train_ids & test_ids)
         self.assertFalse(validation_ids & test_ids)
         self.assertEqual(train_ids | validation_ids | test_ids, {0, 1, 2, 3, 4})
-        self.assertEqual(test_ids, {4})
+        self.assertEqual(test_ids, {3, 4})  # Longest plus the requested additional ID.
+        self.assertEqual(info.longest_trajectory_id, 3)
         self.assertEqual(len(train) + len(validation) + len(test), len(self.dataset))
         self.assertEqual(info.train_samples, len(train))
         self.assertEqual(info.validation_samples, len(validation))
         self.assertEqual(info.test_samples, len(test))
+
+    def test_default_split_uses_trajectory_counts_and_forces_longest(self) -> None:
+        ids = np.repeat(np.arange(20), np.arange(1, 21))
+        dataset = TrajectoryMetadataDataset(ids)
+        train, validation, test, info = make_trajectory_train_val_test_datasets(dataset, seed=7)
+        self.assertEqual([len(info.train_trajectory_ids), len(info.validation_trajectory_ids),
+                          len(info.test_trajectory_ids)], [16, 2, 2])
+        self.assertEqual(info.longest_trajectory_id, 19)
+        self.assertIn(19, info.test_trajectory_ids)
+        # The forced longest occupies a test slot; it is not an extra third ID.
+        self.assertEqual(np.count_nonzero(ids[test.indices] == 19), 20)
+        groups = [set(ids[view.indices]) for view in (train, validation, test)]
+        self.assertFalse(groups[0] & groups[1] or groups[0] & groups[2] or groups[1] & groups[2])
+        np.testing.assert_array_equal(
+            np.sort(np.concatenate([train.indices, validation.indices, test.indices])),
+            np.arange(len(dataset)),
+        )
+
+    def test_default_1847_group_counts_are_1477_185_185(self) -> None:
+        dataset = TrajectoryMetadataDataset(np.r_[np.arange(1847), 738])
+        info = make_trajectory_train_val_test_datasets(dataset, seed=7)[3]
+        self.assertEqual([len(info.train_trajectory_ids), len(info.validation_trajectory_ids),
+                          len(info.test_trajectory_ids)], [1477, 185, 185])
+        self.assertEqual(info.longest_trajectory_id, 738)
+        self.assertIn(738, info.test_trajectory_ids)
+
+    def test_seed_changes_random_assignments_but_not_forced_longest(self) -> None:
+        dataset = TrajectoryMetadataDataset(np.repeat(np.arange(20), np.arange(1, 21)))
+        first = make_trajectory_train_val_test_datasets(dataset, seed=7)[3]
+        self.assertEqual(first, make_trajectory_train_val_test_datasets(dataset, seed=7)[3])
+        variants = [make_trajectory_train_val_test_datasets(dataset, seed=seed)[3]
+                    for seed in range(8, 13)]
+        # Different seeds can legitimately draw the same small subset. Check
+        # that the seed affects selection, not that every pair must differ.
+        self.assertTrue(any(first.test_trajectory_ids != item.test_trajectory_ids for item in variants))
+        self.assertTrue(any(first.validation_trajectory_ids != item.validation_trajectory_ids for item in variants))
+        self.assertTrue(all(19 in item.test_trajectory_ids for item in variants))
+
+    def test_nonlongest_lengths_and_row_order_do_not_control_groups(self) -> None:
+        lengths = np.r_[np.arange(1, 20), 100]
+        ids = np.repeat(np.arange(20), lengths)
+        reference = make_trajectory_train_val_test_datasets(TrajectoryMetadataDataset(ids), seed=7)[3]
+        changed_lengths = np.r_[np.arange(19, 0, -1), 100]
+        shuffled_ids = np.random.default_rng(123).permutation(np.repeat(np.arange(20), changed_lengths))
+        changed = make_trajectory_train_val_test_datasets(
+            TrajectoryMetadataDataset(shuffled_ids), seed=7,
+        )[3]
+        self.assertEqual(reference.train_trajectory_ids, changed.train_trajectory_ids)
+        self.assertEqual(reference.validation_trajectory_ids, changed.validation_trajectory_ids)
+        self.assertEqual(reference.test_trajectory_ids, changed.test_trajectory_ids)
+
+    def test_tied_longest_and_tiny_corpus_are_deterministic(self) -> None:
+        dataset = TrajectoryMetadataDataset(np.array([9, 4, 2]))
+        train, validation, test, info = make_trajectory_train_val_test_datasets(dataset)
+        self.assertEqual([len(train), len(validation), len(test)], [1, 1, 1])
+        self.assertEqual(info.longest_trajectory_id, 2)
+        self.assertEqual(info.test_trajectory_ids, (2,))
+
+    def test_invalid_fractions_and_impossible_group_counts_fail(self) -> None:
+        for name in ("val_fraction", "test_fraction"):
+            for value in (0, -0.1, 1, float("nan"), float("inf")):
+                with self.subTest(name=name, value=value), self.assertRaises(ValueError):
+                    make_trajectory_train_val_test_datasets(self.dataset, **{name: value})
+        with self.assertRaisesRegex(ValueError, "less than 1"):
+            make_trajectory_train_val_test_datasets(self.dataset, val_fraction=0.5, test_fraction=0.5)
+        small = TrajectoryMetadataDataset(np.arange(3))
+        with self.assertRaisesRegex(ValueError, "no training trajectories"):
+            make_trajectory_train_val_test_datasets(small, val_fraction=0.34, test_fraction=0.5)
+        with self.assertRaisesRegex(ValueError, "At least three"):
+            make_trajectory_train_val_test_datasets(TrajectoryMetadataDataset(np.arange(2)))
+
+    def test_unknown_or_overfull_extra_test_id_fails(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Unknown test_trajectory_id"):
+            make_trajectory_train_val_test_datasets(self.dataset, test_trajectory_id=999)
+        with self.assertRaisesRegex(ValueError, "too few slots"):
+            make_trajectory_train_val_test_datasets(self.dataset, test_trajectory_id=4)
+        # Requesting the longest again must not consume another slot.
+        info = make_trajectory_train_val_test_datasets(self.dataset, test_trajectory_id=3)[3]
+        self.assertEqual(info.test_trajectory_ids, (3,))
 
 
 if __name__ == "__main__":
