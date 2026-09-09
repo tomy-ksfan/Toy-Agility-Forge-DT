@@ -10,10 +10,12 @@ import numpy as np
 def sample_initial_billet(
     R0: float,
     H0: float,
-    N: int,
+    N: int | None = None,
     rotate: bool = True,
     seed: Optional[int] = None,
     return_labels: bool = False,
+    *,
+    target_points: np.ndarray | None = None,
 ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """Sample a cylindrical billet surface point cloud.
 
@@ -27,6 +29,7 @@ def sample_initial_billet(
     N:
         Total number of surface points. Points are allocated between
         the side wall and two caps according to their surface areas.
+        Provide either ``N`` or ``target_points``, not both.
     rotate:
         If true, apply a random z-axis rotation after sampling.
     seed:
@@ -34,6 +37,10 @@ def sample_initial_billet(
     return_labels:
         If true, also return a string label for each point: ``side``,
         ``top_cap``, or ``bottom_cap``.
+    target_points:
+        Optional nonempty target point cloud with shape ``(M, 3)``. When
+        provided, use ``M`` as ``N``. Only the number of points is used;
+        target coordinates do not change the billet sampling method.
 
     Returns
     -------
@@ -47,6 +54,19 @@ def sample_initial_billet(
         raise ValueError("R0 must be positive.")
     if H0 <= 0:
         raise ValueError("H0 must be positive.")
+    if target_points is not None:
+        if N is not None:
+            raise ValueError("Provide either N or target_points, not both.")
+        target_points = np.asarray(target_points)
+        if (
+            target_points.ndim != 2
+            or target_points.shape[1] != 3
+            or target_points.shape[0] == 0
+        ):
+            raise ValueError("target_points must have nonempty shape (M, 3).")
+        N = int(target_points.shape[0])
+    if N is None:
+        raise ValueError("Provide N or target_points.")
     if isinstance(N, bool) or not isinstance(N, (int, np.integer)):
         raise TypeError("N must be an integer.")
     if N <= 0:
