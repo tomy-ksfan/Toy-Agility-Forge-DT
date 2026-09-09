@@ -341,30 +341,3 @@ test data is evaluated only after selection. A completed run writes:
 The checkpoint contains inference weights, not optimizer state for resuming
 training. This entry point does not perform pose alignment, recursive rollout,
 or MPC.
-
-## Available checks
-
-Run the uploaded dataset tests without downloading the full dataset:
-
-```bash
-python -m unittest discover -s tests -p 'test_*.py' -v
-```
-
-All 13 published tests pass on temporary data. They cover shard loading,
-tensor construction, metadata isolation, trajectory-count splitting,
-longest-trajectory inclusion, seed reproducibility, and invalid split choices.
-
-Before publication, nine additional local trainer-integration tests also
-passed against the uploaded model/trainer and updated loader, including a
-one-epoch synthetic run, checkpoint reload, and overwrite protection. These
-additional tests are not included in the published test directory. The full
-132,300-transition corpus passed a loading and split-coverage inspection.
-These checks do not establish deformation accuracy or closed-loop performance;
-full-corpus training was not run as part of this update.
-
-The command-line help is also available without a dataset:
-
-```bash
-python sqlite_to_forgenet_shards.py --help
-python train_forgenet.py --help
-```
