@@ -56,15 +56,15 @@ from sampling import sample_initial_billet
 X0, labels = sample_initial_billet(
     R0=1.0,
     H0=1.35,
-    N=1020,
+    N=8108,
     rotate=False,
     seed=7,
     return_labels=True,
 )
 
-print(X0.shape)  # (1020, 3), float32
+print(X0.shape)  # (8108, 3), float32
 print(dict(zip(*np.unique(labels, return_counts=True))))
-# side: 744, top_cap: 138, bottom_cap: 138
+# side: 5,916, top_cap: 548, bottom_cap: 548
 ```
 
 To match an already loaded target array `target_full` with shape `(M, 3)`,
@@ -79,10 +79,6 @@ X0 = sample_initial_billet(
     seed=7,
 )
 ```
-
-For an 8,108-point target and these dimensions, the billet has 5,916 side
-points and 1,096 points per cap. The sampler does not accept `target_points`
-or separate `N_side`/`N_caps` arguments.
 
 Matching counts does not copy the target's shape, align the two objects, or
 establish material-point correspondence. It also does not resample existing
