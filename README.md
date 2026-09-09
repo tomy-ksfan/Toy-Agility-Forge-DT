@@ -15,7 +15,7 @@ one-step deformation with ForgeNet.
 | [train_forgenet.py](train_forgenet.py) | Define initialization, batching, training, validation-based checkpoint selection, and final test evaluation. |
 | [tests/test_dataset.py](tests/test_dataset.py) | Test shard loading, tensor construction, pose-metadata isolation, and trajectory-safe splitting. |
 
-The data path is SQLite → NPZ shards → `dataset.py` → ForgeNet training.
+The data path is SQLite → NPZ shards → dataset → ForgeNet training.
 The loader and trainer use the same trajectory-safe split interface. See
 [Training](#training) for data inspection and training commands.
 
